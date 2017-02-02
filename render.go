@@ -72,6 +72,10 @@ func Init() error {
 // Close finalizes termui library,
 // should be called after successful initialization when termui's functionality isn't required anymore.
 func Close() {
+	// Wait for any renders to complete before shutting down, as interrupting them may cause
+	// a data race.
+	renderSerializer.Lock()
+	defer renderSerializer.Unlock()
 	tm.Close()
 }
 
@@ -137,6 +141,9 @@ func render(bs ...Bufferer) {
 	// render
 	tm.Flush()
 	renderLock.Unlock()
+
+	// Inform the Render function that the actual rendering is complete, so it can return.
+	syncRender.Done()
 }
 
 func Clear() {
@@ -158,7 +165,17 @@ func ClearArea(r image.Rectangle, bg Attribute) {
 
 var renderJobs chan []Bufferer
 
+var renderSerializer sync.Mutex
+var syncRender sync.WaitGroup
 func Render(bs ...Bufferer) {
+	// Add a lock to ensure Renders are processed synchronously
+	renderSerializer.Lock()
+	defer renderSerializer.Unlock()
+
+	// Use a waitgroup to convert the async channel used to process render events, to a synchronous
+	// one, as overlapping renders can cause data races.
+	syncRender.Add(1)
 	//go func() { renderJobs <- bs }()
 	renderJobs <- bs
+	syncRender.Wait()
 }
